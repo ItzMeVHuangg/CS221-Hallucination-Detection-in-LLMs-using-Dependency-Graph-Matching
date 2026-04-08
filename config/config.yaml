@@ -1,0 +1,53 @@
+project:
+  name: "Hallucination Detection in LLMs via Dependency Graph Matching"
+  seed: 42
+
+data:
+  dataset_name: "xsum"
+  split: "test"           # test | validation | train
+  num_samples: 500        # set null to use full split
+  hallucination_annotations: "data/xsum_hallucination_annotations.json"  # optional external annotations
+
+model:
+  summarizer: "facebook/bart-large-xsum"   # local HF model
+  # alternatives: "google/pegasus-xsum", "t5-base", "sshleifer/distilbart-xsum-12-6"
+  device: "auto"          # auto | cpu | cuda
+  batch_size: 8
+  max_input_length: 1024
+  max_summary_length: 128
+  num_beams: 4
+  length_penalty: 2.0
+  early_stopping: true
+
+graph:
+  spacy_model: "en_core_web_sm"   # en_core_web_sm | en_core_web_trf
+  include_ner: true               # include Named Entities as special nodes
+  include_svo: true               # extract Subject-Verb-Object triples
+  include_coref: false            # coreference resolution (requires neuralcoref)
+  min_node_freq: 1
+
+matching:
+  algorithm: "hybrid"             # svo | entity | subgraph | hybrid
+  svo_weight: 0.4
+  entity_weight: 0.35
+  lexical_weight: 0.25
+  threshold: 0.5                  # below this => hallucination
+  use_lemmatization: true
+  use_fuzzy_match: true
+  fuzzy_threshold: 0.8
+
+evaluation:
+  metrics:
+    - "precision"
+    - "recall"
+    - "f1"
+    - "auc_roc"
+    - "accuracy"
+  output_dir: "outputs/results"
+  save_graphs: true
+  graphs_dir: "outputs/graphs"
+  summaries_dir: "outputs/summaries"
+
+logging:
+  level: "INFO"
+  log_file: "outputs/run.log"

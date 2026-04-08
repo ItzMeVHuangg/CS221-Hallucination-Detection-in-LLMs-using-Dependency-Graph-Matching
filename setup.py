@@ -1,0 +1,30 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="hallucination-detection-dgm",
+    version="0.1.0",
+    description="Hallucination Detection in LLMs using Dependency Graph Matching",
+    author="CS221 Project",
+    packages=find_packages(),
+    python_requires=">=3.9",
+    install_requires=[
+        "torch>=2.0.0",
+        "transformers>=4.35.0",
+        "datasets>=2.14.0",
+        "accelerate>=0.24.0",
+        "spacy>=3.7.0",
+        "networkx>=3.1",
+        "numpy>=1.24.0",
+        "pandas>=2.0.0",
+        "scikit-learn>=1.3.0",
+        "matplotlib>=3.7.0",
+        "seaborn>=0.12.0",
+        "pyyaml>=6.0",
+        "tqdm>=4.65.0",
+        "rouge-score>=0.1.2",
+        "nltk>=3.8.1",
+        "rapidfuzz>=3.5.0",
+        "pyvis>=0.3.2",
+        "scipy>=1.11.0",
+    ],
+)
