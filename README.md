@@ -1,6 +1,5 @@
 # Hallucination Detection in LLMs using Dependency Graph Matching
-
-> **CS221 – Natural Language Processing**  
+  
 > Detecting factual hallucinations in abstractive summaries by comparing dependency graphs of source documents and generated outputs.
 
 ---
