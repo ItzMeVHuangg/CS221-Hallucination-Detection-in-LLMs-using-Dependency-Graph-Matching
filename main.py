@@ -1,26 +1,3 @@
-"""
-main.py — Full end-to-end pipeline for Hallucination Detection via DGM.
-
-Runs all three steps in sequence:
-  1. Load XSum + generate summaries (local LLM)
-  2. Build dependency graphs + run graph matching detection
-  3. Evaluate (classification metrics + ROUGE)
-  4. (Optional) Visualize sample graphs
-
-Usage:
-    # Full pipeline:
-    python main.py --config config/config.yaml
-
-    # Skip generation (use saved summaries):
-    python main.py --skip-generation --summaries outputs/summaries/summaries.json
-
-    # Quick smoke test with 10 samples:
-    python main.py --num-samples 10
-
-    # Full pipeline + visualize top-5 hallucinated samples:
-    python main.py --visualize 5
-"""
-
 import argparse
 import sys
 from pathlib import Path

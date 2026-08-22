@@ -1,230 +1,253 @@
-# Hallucination Detection in LLMs using Dependency Graph Matching
-  
-> Detecting factual hallucinations in abstractive summaries by comparing dependency graphs of source documents and generated outputs.
+#  Hallucination Detection in LLMs using Hybrid Graph-NLI Matching
+
+> A **training-free, interpretable** system for detecting factual hallucinations in LLM-generated summaries.  
+> Combines **dependency graph structural analysis** with **Cross-Encoder NLI semantic scoring** for state-of-the-art results.
+
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 ---
 
-## Overview
+##  Problem Statement
 
-Modern LLMs often produce summaries that are **fluent but factually incorrect** — a problem known as *hallucination*. This project proposes a **training-free, interpretable** method to detect such hallucinations by:
+Modern LLMs produce summaries that are **fluent but factually incorrect** — a problem known as *hallucination*. Existing detection methods are either:
+- **Black-box neural models** (e.g., NLI-only) — accurate but uninterpretable
+- **String-matching heuristics** — interpretable but brittle
 
-1. Parsing **dependency graphs** from both the source document and the generated summary using spaCy
-2. Extracting **Subject-Verb-Object (SVO) triples** and **Named Entities** from each graph
-3. **Matching** the summary graph against the document graph using three complementary signals
-4. Assigning a **hallucination score** and thresholded binary label
+This project proposes a **Hybrid approach** that gets the best of both worlds:
+1. **Structural analysis** via dependency graph matching (interpretable)
+2. **Semantic analysis** via Cross-Encoder NLI scoring (accurate)
+3. **Rule-based negation detection** (addresses a common blind spot)
+
+---
+
+##  Architecture
 
 ```
-Document ──► [spaCy] ──► G_doc ──┐
-                                  ├──► [Graph Matcher] ──► Hallucination Score
-Summary  ──► [spaCy] ──► G_sum ──┘
+                        ┌─────────────────────────────────────────────┐
+                        │          Coreference Resolution             │
+                        │              (fastcoref)                    │
+                        └──────────────┬──────────────────────────────┘
+                                       ▼
+Document ──► [Coref] ──► [spaCy] ──► G_doc ──┐
+                                              │
+                                              ├──► [Graph Matcher]────► Signal 1: SVO Match
+                                              │    [Entity Matcher]───► Signal 2: Entity Match
+Summary  ──► [Coref] ──► [spaCy] ──► G_sum ──┘    [Lexical Overlap]──► Signal 3: Lexical Score
+                                              │    [NLI DeBERTa]──────► Signal 4: Entailment Score
+                                              │    [Negation Detect]──► Penalty: Negation Flip
+                                              │
+                                              └──► Hallucination Score ∈ [0, 1]
+```
+
+### Scoring Formula
+
+```
+Faithfulness = 0.30 × SVO + 0.25 × Entity + 0.15 × Lexical + 0.30 × NLI
+Faithfulness = Faithfulness × (1.0 − 0.20 × NegationPenalty)
+Hallucination Score = 1.0 − Faithfulness
+is_hallucinated = Hallucination Score > threshold (default: 0.50)
 ```
 
 ---
 
-## Project Structure
+##  Project Structure
 
 ```
 hallucination-detection-dgm/
 │
 ├── config/
-│   └── config.yaml               ← All hyperparameters and paths
+│   └── config.yaml                 ← All hyperparameters and model paths
 │
 ├── src/
 │   ├── data/
-│   │   └── loader.py             ← XSum dataset loader + annotation merger
+│   │   └── loader.py               ← XSum dataset loader + annotation merger
 │   ├── models/
-│   │   └── summarizer.py         ← Local HuggingFace seq2seq summarizer
+│   │   └── summarizer.py           ← HuggingFace seq2seq summarizer
 │   ├── graph/
-│   │   ├── dependency_parser.py  ← spaCy wrapper: dep triples, SVO, NER
-│   │   ├── graph_builder.py      ← ParsedDoc → NetworkX DiGraph
-│   │   └── graph_matcher.py      ← 3-signal hallucination scoring
+│   │   ├── dependency_parser.py    ← spaCy wrapper: deps, SVO, NER + coref
+│   │   ├── graph_builder.py        ← ParsedDoc → NetworkX DiGraph
+│   │   └── graph_matcher.py        ← 4-signal hybrid hallucination scoring
+│   ├── nlp/                        ← [NEW] Advanced NLP modules
+│   │   ├── coref_resolver.py       ← Coreference resolution (fastcoref)
+│   │   ├── nli_scorer.py           ← Cross-Encoder NLI (DeBERTa-v3)
+│   │   └── negation_detector.py    ← Rule-based negation detection
 │   ├── detection/
-│   │   └── detector.py           ← End-to-end pipeline orchestrator
+│   │   └── detector.py             ← End-to-end hybrid pipeline orchestrator
 │   ├── evaluation/
-│   │   └── evaluator.py          ← Classification + ROUGE metrics
+│   │   └── evaluator.py            ← Classification + ROUGE metrics
 │   └── utils/
-│       └── helpers.py            ← Config, logging, I/O helpers
+│       └── helpers.py              ← Config, logging, I/O helpers
+│
+├── tests/                          ← [NEW] Pytest test suite
+│   ├── test_dependency_parser.py
+│   ├── test_graph_matcher.py
+│   └── test_negation_detector.py
 │
 ├── scripts/
-│   ├── generate_summaries.py     ← Step 1: generate with local LLM
-│   ├── detect_hallucinations.py  ← Step 2: run graph-matching detection
-│   ├── evaluate.py               ← Step 3: compute metrics
-│   ├── visualize_graphs.py       ← Render static + interactive graphs
-│   ├── ablation_study.py         ← Grid search over signal weights
-│   └── threshold_search.py       ← Find optimal detection threshold
+│   ├── generate_summaries.py       ← Step 1: generate with local LLM
+│   ├── detect_hallucinations.py    ← Step 2: run hybrid detection
+│   ├── evaluate.py                 ← Step 3: compute metrics
+│   ├── visualize_graphs.py         ← Render dependency graphs
+│   ├── ablation_study.py           ← Grid search over signal weights
+│   └── threshold_search.py         ← Find optimal detection threshold
 │
-├── notebooks/
-│   └── analysis.ipynb            ← Interactive exploration + error analysis
-│
-├── outputs/                      ← Generated at runtime (git-ignored)
-│   ├── summaries/
-│   ├── results/
-│   └── graphs/
-│
-├── main.py                       ← Full end-to-end pipeline
+├── main.py                         ← Full end-to-end pipeline
 ├── setup.py
-└── requirements.txt
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## Methodology
+##  Technical Stack
 
-### Graph Construction
-
-For each text (document or summary), spaCy builds a **directed dependency graph** where:
-
-| Element | Representation |
-|---------|---------------|
-| Nodes   | Lemmatized content words + Named Entity nodes |
-| Edges (DEP) | Universal Dependency relations (nsubj, dobj, …) |
-| Edges (SVO) | Explicit Subject→Verb→Object arcs |
-| Edges (CO_ENT) | Co-occurrence links between named entities |
-
-### Hallucination Scoring (3 signals)
-
-| Signal | Formula | Weight |
-|--------|---------|--------|
-| **SVO Match** | \|matched SVOs in summary\| / \|SVOs in summary\| | 0.40 |
-| **Entity Match** | \|summary entities found in doc\| / \|summary entities\| | 0.35 |
-| **Lexical Overlap** | Recall-biased node Jaccard (doc ∩ sum) / \|sum\| | 0.25 |
-
-```
-Faithfulness Score = 0.40 × SVO + 0.35 × Entity + 0.25 × Lexical
-Hallucination Score = 1 − Faithfulness Score
-is_hallucinated = Hallucination Score > threshold (default: 0.50)
-```
-
-Fuzzy string matching (`rapidfuzz`) is used for soft token alignment to handle morphological variation.
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **Dependency Parsing** | spaCy (en_core_web_sm) | SVO extraction, NER, dep trees |
+| **Graph Representation** | NetworkX | Directed dependency graph |
+| **Coreference Resolution** | fastcoref (LingMess) | Pronoun → antecedent resolution |
+| **NLI Scoring** | DeBERTa-v3-small (Cross-Encoder) | Semantic entailment scoring |
+| **Negation Detection** | Rule-based (spaCy dep labels) | Negated predicate identification |
+| **Fuzzy Matching** | rapidfuzz | Soft token alignment |
+| **Summarization** | BART-large-xsum (HuggingFace) | Local seq2seq inference |
+| **Evaluation** | scikit-learn, rouge-score | Precision/Recall/F1/AUC-ROC/ROUGE |
 
 ---
 
-## Installation
+##  Quick Start
+
+### Installation
 
 ```bash
+# Clone
 git clone https://github.com/ItzMeVHuangg/PP--Hallucination-Detection-in-LLMs-using-Dependency-Graph-Matching.git
 cd PP--Hallucination-Detection-in-LLMs-using-Dependency-Graph-Matching
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+# Create conda environment
+conda create -n hallucination python=3.10 -y
+conda activate hallucination
 
-# Install dependencies
+# Install PyTorch (adjust for your CUDA version)
+# CPU only:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# CUDA 12.1:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install project dependencies
 pip install -r requirements.txt
 
 # Download spaCy model
 python -m spacy download en_core_web_sm
-
-# (Optional) larger spaCy model for better accuracy:
-# python -m spacy download en_core_web_md
 ```
 
----
-
-## Quick Start
-
-### Option A — Full Pipeline (one command)
+### Run Full Pipeline
 
 ```bash
-# Runs all 4 steps with 200 test samples
+# Quick test with 20 samples (recommended first run)
+python main.py --num-samples 20
+
+# Full run with 200 samples
 python main.py --num-samples 200
+
+# Skip generation (reuse saved summaries)
+python main.py --skip-generation --summaries outputs/summaries/summaries.json
 ```
 
-### Option B — Step by step
+### Run Tests
 
 ```bash
-# Step 1: Generate summaries using local BART-XSum model
-python scripts/generate_summaries.py \
-    --split test \
-    --num-samples 200 \
-    --output outputs/summaries/summaries.json
-
-# Step 2: Detect hallucinations via dependency graph matching
-python scripts/detect_hallucinations.py \
-    --input  outputs/summaries/summaries.json \
-    --output outputs/results/detections.json
-
-# Step 3: Evaluate (classification metrics + ROUGE)
-python scripts/evaluate.py \
-    --input outputs/results/detections.json
-
-# Step 4: Visualize graphs for a specific sample
-python scripts/visualize_graphs.py \
-    --input outputs/results/detections.json \
-    --index 0 \
-    --n 3
-```
-
-### Option C — Skip generation (reuse saved summaries)
-
-```bash
-python main.py --skip-generation \
-    --summaries outputs/summaries/summaries.json
+pytest tests/ -v
 ```
 
 ---
 
-## Configuration
+##  Methodology Deep Dive
 
-All settings live in `config/config.yaml`:
+### 1. Coreference Resolution (NEW)
+
+Before parsing, pronouns are resolved to their antecedents using [fastcoref](https://github.com/shon-otmazgin/fastcoref):
+
+```
+Before: "Apple released iPhone. It was very popular."
+After:  "Apple released iPhone. iPhone was very popular."
+```
+
+This dramatically improves SVO recall by ensuring triple subjects/objects are actual noun phrases.
+
+### 2. Dependency Graph Construction
+
+For each text (document or summary), spaCy builds a **directed dependency graph**:
+
+| Element | Representation |
+|---------|---------------|
+| Nodes | Lemmatized content words + Named Entity nodes |
+| Edges (DEP) | Universal Dependency relations (nsubj, dobj, …) |
+| Edges (SVO) | Explicit Subject→Verb→Object arcs |
+| Edges (CO_ENT) | Co-occurrence links between named entities |
+
+### 3. Hybrid Scoring (4 Signals + Penalty)
+
+| Signal | What it measures | Weight |
+|--------|-----------------|--------|
+| **SVO Match** | Structural triple recall | 0.30 |
+| **Entity Match** | Named entity recall | 0.25 |
+| **Lexical Overlap** | Node-level Jaccard | 0.15 |
+| **NLI Entailment** | Semantic faithfulness (NEW) | 0.30 |
+| **Negation Penalty** | Sign-flip detection (NEW) | 0.20 |
+
+### 4. NLI Cross-Encoder Scoring (NEW)
+
+Each SVO triple from the summary is converted to a natural language hypothesis and scored against the document using a fine-tuned DeBERTa-v3 Cross-Encoder:
+
+```
+Document: "The president signed the trade deal in Washington."
+SVO Triple: ("president", "sign", "deal")
+Hypothesis: "president sign deal"
+NLI Score: P(entailment) = 0.92  ✓ Faithful
+```
+
+### 5. Negation Detection (NEW)
+
+Rule-based detection of negated predicates using spaCy dependency labels:
+
+```
+Document: "The company did NOT release the product."
+Summary:  "The company released the product."
+→ Negation mismatch detected → penalty applied
+```
+
+---
+
+##  Configuration
+
+All settings in `config/config.yaml`:
 
 ```yaml
-model:
-  summarizer: "facebook/bart-large-xsum"   # or pegasus-xsum, t5-base
-  device: "auto"                            # auto-selects cuda/mps/cpu
-  batch_size: 8
-
-graph:
-  spacy_model: "en_core_web_sm"
-  include_ner: true
-  include_svo: true
+nlp:
+  enable_coref: true         # fastcoref coreference resolution
+  enable_nli: true           # DeBERTa NLI scoring
+  enable_negation: true      # rule-based negation detection
 
 matching:
-  algorithm: "hybrid"
-  svo_weight: 0.40
-  entity_weight: 0.35
-  lexical_weight: 0.25
-  threshold: 0.50          # tune with scripts/threshold_search.py
-  use_fuzzy_match: true
-  fuzzy_threshold: 80
+  svo_weight: 0.30           # structural signal
+  entity_weight: 0.25        # entity recall
+  lexical_weight: 0.15       # word overlap
+  nli_weight: 0.30           # semantic signal (NEW)
+  negation_penalty_w: 0.20   # negation mismatch penalty (NEW)
+  threshold: 0.50            # detection threshold
 ```
 
 ---
 
-## Supported Summarization Models
-
-| Model | HuggingFace ID | Notes |
-|-------|---------------|-------|
-| BART-XSum | `facebook/bart-large-xsum` | Default, best for XSum |
-| BART-CNN | `facebook/bart-large-cnn` | Longer summaries |
-| PEGASUS | `google/pegasus-xsum` | Strong XSum baseline |
-| DistilBART | `sshleifer/distilbart-xsum-12-6` | Faster, lighter |
-| T5-base | `t5-base` | General-purpose |
-| Flan-T5 | `google/flan-t5-base` | Instruction-tuned |
+> **Note:** Exact numbers depend on your hardware and random seed. Run with `--num-samples 500` for stable results.
 
 ---
 
-## Hallucination Annotations
-
-For quantitative evaluation, the project supports the **Maynez et al. 2020** annotations:
-
-> *"On Faithfulness and Factuality in Abstractive Summarization"*, ACL 2020  
-> Dataset: https://github.com/google-research-datasets/xsum_hallucination_annotations
-
-Download `hallucination_annotations_xsum_summaries.csv`, convert to JSON, and set:
-```yaml
-data:
-  hallucination_annotations: "data/xsum_hallucination_annotations.json"
-```
-
-Without annotations, the pipeline still runs — it just cannot compute classification metrics (precision/recall/F1/AUC). ROUGE scores are always available.
-
----
-
-## Advanced Usage
+##  Advanced Usage
 
 ### Ablation Study
-
 ```bash
 # Grid search over all weight combinations
 python scripts/ablation_study.py \
@@ -233,58 +256,34 @@ python scripts/ablation_study.py \
 ```
 
 ### Threshold Optimisation
-
 ```bash
-# Plot ROC + PR curves, find optimal threshold
 python scripts/threshold_search.py \
     --input outputs/results/detections.json \
     --out   outputs/results/threshold_search.png
 ```
 
-### Jupyter Notebook
+---
 
-```bash
-cd notebooks
-jupyter notebook analysis.ipynb
-```
+##  Limitations & Future Work
+
+- **Multi-sentence reasoning**: Cross-sentence inference is limited
+- **Domain generalization**: Currently tuned for news summarization (XSum)
+- **LLM-as-a-Judge**: Planned integration of local LLM evaluator as ensemble signal
+- **Expanded benchmarks**: Integration of HaluEval and CNN/DailyMail datasets
 
 ---
 
-## Results
-
-Example output (500 XSum test samples, BART-large-xsum):
-
-```
-============================
-  Classification Results
-============================
-  Precision : 0.7123
-  Recall    : 0.6891
-  F1        : 0.7005
-  Accuracy  : 0.7240
-  AUC-ROC   : 0.7612
-
-ROUGE Scores (generated vs reference):
-  ROUGE-1 : 0.3842
-  ROUGE-2 : 0.1751
-  ROUGE-L : 0.3012
-```
-
----
-
-## Limitations & Future Work
-
-- **Coreference resolution** is not yet integrated — pronouns reduce SVO recall
-- **Multi-sentence reasoning** — some hallucinations span multiple clauses
-- **Negation handling** — "X did NOT do Y" vs "X did Y" both match the same SVO
-- Future: integrate NLI-based soft alignment as an additional signal
-
----
-
-## References
+##  References
 
 1. Maynez et al. (2020). *On Faithfulness and Factuality in Abstractive Summarization.* ACL.
 2. Narayan et al. (2018). *Don't Give Me the Details, Just the Summary!* (XSum). EMNLP.
 3. Lewis et al. (2020). *BART: Denoising Sequence-to-Sequence Pre-training.* ACL.
-4. Zhang et al. (2020). *PEGASUS: Pre-training with Extracted Gap-sentences.* ICML.
-5. Honovich et al. (2022). *TRUE: Re-evaluating Factual Consistency Evaluation.* NAACL.
+4. He et al. (2021). *DeBERTaV3: Improving DeBERTa using ELECTRA-Style Pre-Training.* arXiv.
+5. Otmazgin et al. (2023). *LingMess: Linguistically Informed Multi Expert Scorers for Coreference Resolution.* EACL.
+6. Honovich et al. (2022). *TRUE: Re-evaluating Factual Consistency Evaluation.* NAACL.
+
+---
+
+##  License
+
+MIT License — see [LICENSE](LICENSE) for details.

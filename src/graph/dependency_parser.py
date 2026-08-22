@@ -1,12 +1,3 @@
-"""
-Dependency Parser — wraps spaCy to extract:
-  1. Dependency triples   (head_lemma, dep_label, child_lemma)
-  2. SVO triples          (subject_lemma, verb_lemma, object_lemma)
-  3. Named entities       [(text, label), ...]
-
-All parsing is done locally via spaCy.
-"""
-
 import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -56,12 +47,13 @@ class SVOTriple:
 @dataclass
 class ParsedDoc:
     """Everything extracted from a single text."""
-    text:      str
-    tokens:    List[str]              = field(default_factory=list)
-    lemmas:    List[str]              = field(default_factory=list)
-    entities:  List[Tuple[str, str]]  = field(default_factory=list)  # (text, label)
-    dep_triples: List[DepTriple]      = field(default_factory=list)
-    svo_triples: List[SVOTriple]      = field(default_factory=list)
+    text:        str
+    tokens:      List[str]              = field(default_factory=list)
+    lemmas:      List[str]              = field(default_factory=list)
+    entities:    List[Tuple[str, str]]  = field(default_factory=list)  # (text, label)
+    dep_triples: List[DepTriple]        = field(default_factory=list)
+    svo_triples: List[SVOTriple]        = field(default_factory=list)
+    spacy_doc:   object                 = None  # raw spaCy Doc [NEW]
 
 
 # ─── Parser ──────────────────────────────────────────────────────────────────
@@ -70,9 +62,11 @@ class DependencyParser:
     """
     Thin wrapper around spaCy for structured extraction.
 
+    v2: Optionally integrates coreference resolution before parsing.
+
     Args:
-        model_name: spaCy model ('en_core_web_sm', 'en_core_web_md', 'en_core_web_trf')
-        disable:    pipeline components to disable (speeds up processing)
+        model_name:     spaCy model ('en_core_web_sm', 'en_core_web_md', 'en_core_web_trf')
+        coref_resolver: Optional CoreferenceResolver instance
     """
 
     # Dependency labels that indicate the object of a verb
@@ -82,7 +76,13 @@ class DependencyParser:
     # POS tags to skip for content filtering
     _SKIP_POS = {"PUNCT", "SPACE", "DET", "PART", "SCONJ", "CCONJ", "NUM", "SYM", "X"}
 
-    def __init__(self, model_name: str = "en_core_web_sm"):
+    def __init__(
+        self,
+        model_name: str = "en_core_web_sm",
+        coref_resolver: Optional[object] = None,
+    ):
+        self.coref_resolver = coref_resolver
+
         logger.info(f"Loading spaCy model: {model_name}")
         try:
             self.nlp: Language = spacy.load(model_name)
@@ -99,27 +99,40 @@ class DependencyParser:
 
     def parse(self, text: str) -> ParsedDoc:
         """Full parse of a single text string."""
-        doc = self.nlp(text)
+        # Apply coreference resolution if available [NEW]
+        resolved_text = text
+        if self.coref_resolver:
+            resolved_text = self.coref_resolver.resolve(text)
+
+        doc = self.nlp(resolved_text)
         return ParsedDoc(
-            text=text,
+            text=text,  # keep original text for entity matching
             tokens=[t.text for t in doc if not t.is_space],
             lemmas=[t.lemma_.lower() for t in doc if not t.is_space],
             entities=[(ent.text, ent.label_) for ent in doc.ents],
             dep_triples=self._extract_dep_triples(doc),
             svo_triples=self._extract_svo_triples(doc),
+            spacy_doc=doc,  # store raw doc for negation detection [NEW]
         )
 
     def parse_batch(self, texts: List[str], batch_size: int = 64) -> List[ParsedDoc]:
         """Batch parse for efficiency."""
+        # Apply coreference resolution if available [NEW]
+        if self.coref_resolver:
+            resolved_texts = self.coref_resolver.resolve_batch(texts)
+        else:
+            resolved_texts = texts
+
         results = []
-        for doc in self.nlp.pipe(texts, batch_size=batch_size):
+        for original_text, doc in zip(texts, self.nlp.pipe(resolved_texts, batch_size=batch_size)):
             results.append(ParsedDoc(
-                text=doc.text,
+                text=original_text,
                 tokens=[t.text for t in doc if not t.is_space],
                 lemmas=[t.lemma_.lower() for t in doc if not t.is_space],
                 entities=[(ent.text, ent.label_) for ent in doc.ents],
                 dep_triples=self._extract_dep_triples(doc),
                 svo_triples=self._extract_svo_triples(doc),
+                spacy_doc=doc,
             ))
         return results
 
@@ -163,39 +176,36 @@ class DependencyParser:
         triples = []
 
         for token in doc:
-            # Look for verbs (VERB or AUX with object dependency)
             if token.pos_ not in ("VERB", "AUX"):
                 continue
 
             verb_lemma = token.lemma_.lower()
 
-            # Collect subjects
+            # Collect subjects (with compound noun expansion)
             subjects = []
             for child in token.children:
                 if child.dep_ in self._SUBJECT_DEPS:
-                    subjects.append(self._get_span_lemma(child))
-                # Check conjuncts
+                    subjects.append(self._get_compound_span(child))
                 for conj in child.conjuncts:
                     if conj.dep_ in self._SUBJECT_DEPS:
-                        subjects.append(self._get_span_lemma(conj))
+                        subjects.append(self._get_compound_span(conj))
 
-            # Collect objects
+            # Collect objects (with compound noun expansion)
             objects = []
             for child in token.children:
                 if child.dep_ in self._OBJECT_DEPS:
-                    objects.append(self._get_span_lemma(child))
-                # Prepositional objects
+                    objects.append(self._get_compound_span(child))
                 if child.dep_ == "prep":
                     for grandchild in child.children:
                         if grandchild.dep_ == "pobj":
-                            objects.append(self._get_span_lemma(grandchild))
+                            objects.append(self._get_compound_span(grandchild))
 
             # Also check xcomp / advcl for chained verbs
             for child in token.children:
                 if child.dep_ in ("xcomp", "advcl") and child.pos_ == "VERB":
                     for gc in child.children:
                         if gc.dep_ in self._OBJECT_DEPS:
-                            objects.append(self._get_span_lemma(gc))
+                            objects.append(self._get_compound_span(gc))
 
             # Build cross-product of subj × obj
             for subj in subjects:
@@ -217,6 +227,15 @@ class DependencyParser:
         return unique
 
     @staticmethod
-    def _get_span_lemma(token) -> str:
-        """Return the lemma of a token (or compound noun head)."""
-        return token.lemma_.lower().strip()
+    def _get_compound_span(token) -> str:
+        """
+        Return the lemma of a token, expanded to include compound modifiers.
+
+        e.g. 'United States' instead of just 'States'
+        """
+        compounds = []
+        for child in token.children:
+            if child.dep_ == "compound":
+                compounds.append(child.lemma_.lower())
+        compounds.append(token.lemma_.lower())
+        return " ".join(compounds).strip()
