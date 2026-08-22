@@ -1,15 +1,3 @@
-"""
-Evaluator — computes classification metrics and ROUGE scores.
-
-Classification metrics (when ground-truth labels exist):
-  Precision, Recall, F1, Accuracy, AUC-ROC, Confusion Matrix
-
-Text quality metrics (reference summary vs generated summary):
-  ROUGE-1, ROUGE-2, ROUGE-L
-
-Outputs a JSON report and prints a summary table.
-"""
-
 import json
 import logging
 from pathlib import Path
@@ -203,6 +191,8 @@ class Evaluator:
                 "svo_score":           det.get("svo_score", None),
                 "entity_score":        det.get("entity_score", None),
                 "lexical_score":       det.get("lexical_score", None),
+                "nli_score":           det.get("nli_score", None),
+                "negation_penalty":    det.get("negation_penalty", None),
                 "n_svo_summary":       det.get("n_svo_summary", 0),
                 "n_svo_matched":       det.get("n_svo_matched", 0),
                 "n_entities_summary":  det.get("n_entities_summary", 0),

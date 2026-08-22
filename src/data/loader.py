@@ -1,22 +1,3 @@
-"""
-Data loading for XSum dataset.
-
-XSum (Extreme Summarization) — BBC articles with one-sentence summaries.
-  HuggingFace: https://huggingface.co/datasets/EdinburghNLP/xsum
-
-Optionally loads hallucination annotations from Maynez et al. (2020):
-  "On Faithfulness and Factuality in Abstractive Summarization", ACL 2020.
-  Annotations: https://github.com/google-research-datasets/xsum_hallucination_annotations
-
-Each sample returned:
-  {
-    "id":           str,
-    "document":     str,     # BBC article body
-    "summary_ref":  str,     # ground-truth one-sentence summary
-    "summary_gen":  str,     # model-generated summary (filled later)
-    "label":        int,     # 1 = hallucinated, 0 = faithful  (if annotations exist)
-  }
-"""
 
 import json
 import logging
@@ -37,17 +18,7 @@ def load_xsum(
     num_samples: Optional[int] = None,
     annotations_path: Optional[str] = None,
 ) -> List[Dict]:
-    """
-    Load XSum samples (and optional hallucination labels).
 
-    Args:
-        split: 'train' | 'validation' | 'test'
-        num_samples: take first N samples (None = all)
-        annotations_path: path to xsum_hallucination_annotations.json
-
-    Returns:
-        List of sample dicts.
-    """
     logger.info(f"Loading XSum [{split}] from HuggingFace …")
     ds = load_dataset("EdinburghNLP/xsum", split=split, trust_remote_code=True)
 
@@ -66,7 +37,7 @@ def load_xsum(
 
     logger.info(f"Loaded {len(samples)} XSum samples.")
 
-    # ── Optional hallucination annotations ───────────────────────────────────
+    # Optional hallucination annotations 
     if annotations_path and Path(annotations_path).exists():
         samples = _merge_annotations(samples, annotations_path)
     else:
@@ -80,14 +51,7 @@ def load_xsum(
 
 
 def load_xsum_hallucination_annotations(path: str) -> Dict[str, int]:
-    """
-    Load Maynez et al. 2020 annotations.
-    Expected format (JSON list):
-      [{"bbcid": "...", "system": "...", "hallucination_type": "...", ...}, ...]
 
-    Returns:
-        Dict mapping bbcid -> 1 (hallucinated) | 0 (faithful)
-    """
     with open(path, "r", encoding="utf-8") as f:
         records = json.load(f)
 
@@ -102,10 +66,7 @@ def load_xsum_hallucination_annotations(path: str) -> Dict[str, int]:
     return labels
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _merge_annotations(samples: List[Dict], path: str) -> List[Dict]:
     labels = load_xsum_hallucination_annotations(path)
     matched = 0

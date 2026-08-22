@@ -1,19 +1,3 @@
-"""
-Graph Builder — converts ParsedDoc into a directed NetworkX graph.
-
-Node types:
-  - WORD   : content word (lemma)
-  - ENTITY : named entity (text + label)
-
-Edge types:
-  - DEP    : dependency relation  (label = UD dep label)
-  - SVO    : subject-verb-object  (label = 'SVO')
-  - CO_ENT : two entities in same sentence
-
-Nodes carry attributes: {type, pos, entity_type}
-Edges carry attributes: {type, label, weight}
-"""
-
 import logging
 from typing import Dict, List, Optional
 

@@ -1,18 +1,8 @@
-"""
-HallucinationDetector — orchestrates the full detection pipeline:
-
-  document → [dependency parse] → G_doc
-  summary  → [dependency parse] → G_sum
-  (G_doc, G_sum) → [graph matching] → MatchResult → hallucination label
-
-Usage:
-    detector = HallucinationDetector.from_config(cfg)
-    results  = detector.detect_batch(samples)
-"""
 
 import logging
 from typing import Any, Dict, List, Optional
 
+import torch
 import networkx as nx
 
 from src.graph.dependency_parser import DependencyParser, ParsedDoc
@@ -22,25 +12,31 @@ from src.graph.graph_matcher import GraphMatcher, MatchResult
 logger = logging.getLogger(__name__)
 
 
-class HallucinationDetector:
-    """
-    End-to-end hallucination detector.
+def _resolve_device(device_str: str) -> str:
+    """Resolve 'auto' device to the best available device string."""
+    if device_str == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        else:
+            return "cpu"
+    return device_str
 
-    Args:
-        parser:  DependencyParser instance
-        builder: GraphBuilder instance
-        matcher: GraphMatcher instance
-    """
+
+class HallucinationDetector:
 
     def __init__(
         self,
-        parser:  DependencyParser,
-        builder: GraphBuilder,
-        matcher: GraphMatcher,
+        parser:            DependencyParser,
+        builder:           GraphBuilder,
+        matcher:           GraphMatcher,
+        negation_detector: Optional[object] = None,
     ):
-        self.parser  = parser
-        self.builder = builder
-        self.matcher = matcher
+        self.parser            = parser
+        self.builder           = builder
+        self.matcher           = matcher
+        self.negation_detector = negation_detector
 
     # ─── Factory from config ─────────────────────────────────────────────────
 
@@ -48,9 +44,51 @@ class HallucinationDetector:
     def from_config(cls, cfg: Dict) -> "HallucinationDetector":
         graph_cfg    = cfg.get("graph", {})
         matching_cfg = cfg.get("matching", {})
+        nlp_cfg      = cfg.get("nlp", {})
+        device       = _resolve_device(cfg.get("model", {}).get("device", "cpu"))
 
+        # ── Coreference Resolution [NEW] ────────────────────────────────
+        coref_resolver = None
+        if nlp_cfg.get("enable_coref", False):
+            try:
+                from src.nlp.coref_resolver import CoreferenceResolver
+                coref_resolver = CoreferenceResolver(
+                    device=device,
+                    enable=True,
+                )
+                logger.info("✓ Coreference resolution enabled")
+            except Exception as e:
+                logger.warning(f"Could not load coreference resolver: {e}")
+
+        # ── NLI Scorer [NEW] ────────────────────────────────────────────
+        nli_scorer = None
+        if nlp_cfg.get("enable_nli", False):
+            try:
+                from src.nlp.nli_scorer import NLIScorer
+                nli_scorer = NLIScorer(
+                    model_name=nlp_cfg.get("nli_model", "cross-encoder/nli-deberta-v3-small"),
+                    device=device,
+                    enable=True,
+                    max_length=nlp_cfg.get("nli_max_length", 512),
+                )
+                logger.info("✓ NLI scoring enabled")
+            except Exception as e:
+                logger.warning(f"Could not load NLI scorer: {e}")
+
+        # ── Negation Detector [NEW] ─────────────────────────────────────
+        negation_detector = None
+        if nlp_cfg.get("enable_negation", True):
+            try:
+                from src.nlp.negation_detector import NegationDetector
+                negation_detector = NegationDetector()
+                logger.info("✓ Negation detection enabled")
+            except Exception as e:
+                logger.warning(f"Could not load negation detector: {e}")
+
+        # ── Parser ──────────────────────────────────────────────────────
         parser = DependencyParser(
             model_name=graph_cfg.get("spacy_model", "en_core_web_sm"),
+            coref_resolver=coref_resolver,
         )
 
         builder = GraphBuilder(
@@ -59,36 +97,30 @@ class HallucinationDetector:
             include_deps = True,
         )
 
-        # Weights must sum to 1 — read and normalise
-        sw = matching_cfg.get("svo_weight",     0.40)
-        ew = matching_cfg.get("entity_weight",  0.35)
-        lw = matching_cfg.get("lexical_weight", 0.25)
-        total = sw + ew + lw
-        sw, ew, lw = sw / total, ew / total, lw / total
-
+        # ── Matcher ─────────────────────────────────────────────────────
         matcher = GraphMatcher(
-            svo_weight      = sw,
-            entity_weight   = ew,
-            lexical_weight  = lw,
-            threshold       = matching_cfg.get("threshold",       0.50),
-            use_fuzzy_match = matching_cfg.get("use_fuzzy_match", True),
-            fuzzy_threshold = int(matching_cfg.get("fuzzy_threshold", 80)),
+            svo_weight         = matching_cfg.get("svo_weight",         0.30),
+            entity_weight      = matching_cfg.get("entity_weight",      0.25),
+            lexical_weight     = matching_cfg.get("lexical_weight",     0.15),
+            nli_weight         = matching_cfg.get("nli_weight",         0.30),
+            negation_penalty_w = matching_cfg.get("negation_penalty_w", 0.20),
+            threshold          = matching_cfg.get("threshold",          0.50),
+            use_fuzzy_match    = matching_cfg.get("use_fuzzy_match",    True),
+            fuzzy_threshold    = int(matching_cfg.get("fuzzy_threshold", 80)),
+            nli_scorer         = nli_scorer,
+            negation_detector  = negation_detector,
         )
 
-        return cls(parser=parser, builder=builder, matcher=matcher)
+        return cls(
+            parser=parser,
+            builder=builder,
+            matcher=matcher,
+            negation_detector=negation_detector,
+        )
 
     # ─── Core detection ──────────────────────────────────────────────────────
 
     def detect_one(self, sample: Dict) -> Dict:
-        """
-        Detect hallucination for a single sample.
-
-        Args:
-            sample: dict with 'document' and 'summary_gen' keys.
-
-        Returns:
-            sample enriched with 'detection' sub-dict and 'predicted_label'.
-        """
         document    = sample["document"]
         summary_gen = sample.get("summary_gen", "")
 
@@ -99,7 +131,7 @@ class HallucinationDetector:
             sample["predicted_label"] = -1
             return sample
 
-        # Parse
+        # Parse (with coref if enabled)
         doc_parsed = self.parser.parse(document)
         sum_parsed = self.parser.parse(summary_gen)
 
@@ -107,12 +139,14 @@ class HallucinationDetector:
         doc_graph = self.builder.build(doc_parsed)
         sum_graph = self.builder.build(sum_parsed)
 
-        # Match
+        # Match (with NLI + negation if enabled)
         result: MatchResult = self.matcher.match(
             doc_parsed=doc_parsed,
             sum_parsed=sum_parsed,
             doc_graph=doc_graph,
             sum_graph=sum_graph,
+            doc_spacy_doc=doc_parsed.spacy_doc,
+            sum_spacy_doc=sum_parsed.spacy_doc,
         )
 
         # Attach to sample
@@ -130,12 +164,7 @@ class HallucinationDetector:
         samples: List[Dict],
         verbose: bool = True,
     ) -> List[Dict]:
-        """
-        Run detection on a list of samples.
 
-        Returns:
-            Same list, enriched with detection results.
-        """
         from tqdm import tqdm
         iterator = tqdm(samples, desc="Detecting hallucinations") \
             if verbose else samples
